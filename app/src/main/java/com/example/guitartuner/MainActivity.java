@@ -20,19 +20,15 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
-import android.widget.FrameLayout;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
+import androidx.fragment.app.Fragment;
+
+import com.google.android.material.bottomnavigation.BottomNavigationView;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -41,7 +37,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends AppCompatActivity implements TunerFragment.TunerInterface {
 
     private static final int PERMISSION_REQUEST_CODE = 1;
     private static final long SCAN_PERIOD = 10000;
@@ -56,15 +52,6 @@ public class MainActivity extends AppCompatActivity {
     private long lastDetectionTime = 0;
     private static final long PERSISTENCE_MS = 1500;
 
-    private Button btnConnect;
-    private TextView statusText;
-    private TextView noteText;
-    private TextView freqText;
-    private TextView rawLogsText;
-    private ScrollView rawLogsScroll;
-    private View tunerPointer;
-    private LinearLayout waterfallContainer;
-
     private BluetoothAdapter bluetoothAdapter;
     private BluetoothLeScanner bluetoothLeScanner;
     private BluetoothGatt bluetoothGatt;
@@ -73,7 +60,11 @@ public class MainActivity extends AppCompatActivity {
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private double smoothedCents = 0;
-    private static final double SMOOTHING_FACTOR = 0.25; // Nižje = bolj gladko, a počasneje
+    private static final double SMOOTHING_FACTOR = 0.25;
+
+    private TunerFragment tunerFragment;
+    private SongbookFragment songbookFragment;
+    private BottomNavigationView bottomNav;
 
     private final Runnable watchdogRunnable = new Runnable() {
         @Override
@@ -82,16 +73,18 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     long now = System.currentTimeMillis();
                     if (now - lastDetectionTime > PERSISTENCE_MS) {
-                        statusText.setText("STRIKE A STRING");
-                        statusText.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.textColorSecondary));
-                        noteText.setText("--");
-                        freqText.setText("0.00 Hz");
-                        tunerPointer.setVisibility(View.INVISIBLE);
+                        if (tunerFragment != null && tunerFragment.isVisible()) {
+                            tunerFragment.setStatusText("STRIKE A STRING");
+                            tunerFragment.setStatusTextColor(android.R.color.darker_gray);
+                            tunerFragment.setNoteText("--");
+                            tunerFragment.setFreqText("0.00 Hz");
+                            tunerFragment.updateScale(null);
+                        }
                         smoothedCents = 0;
-                    }
-                    // Vedno dodamo prazno vrstico v slap, če ni bilo signala zadnjih 100ms
-                    if (now - lastDetectionTime > 100) {
-                        addWaterfallLine(0, null);
+                    } else if (now - lastDetectionTime > 100) {
+                        if (tunerFragment != null && tunerFragment.isVisible()) {
+                            tunerFragment.updateScale(null);
+                        }
                     }
                 });
             }
@@ -104,45 +97,68 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        btnConnect = findViewById(R.id.btnConnect);
-        statusText = findViewById(R.id.statusText);
-        noteText = findViewById(R.id.noteText);
-        freqText = findViewById(R.id.freqText);
-        rawLogsText = findViewById(R.id.rawLogsText);
-        rawLogsScroll = findViewById(R.id.rawLogsScroll);
-        tunerPointer = findViewById(R.id.tunerPointer);
-        waterfallContainer = findViewById(R.id.waterfallContainer);
+        bottomNav = findViewById(R.id.bottom_navigation);
+        
+        tunerFragment = new TunerFragment();
+        tunerFragment.setTunerInterface(this);
+        songbookFragment = new SongbookFragment();
+
+        loadFragment(tunerFragment);
+
+        bottomNav.setOnItemSelectedListener(item -> {
+            if (item.getItemId() == R.id.nav_tuner) {
+                loadFragment(tunerFragment);
+                return true;
+            } else if (item.getItemId() == R.id.nav_songbook) {
+                loadFragment(songbookFragment);
+                return true;
+            }
+            return false;
+        });
 
         BluetoothManager bluetoothManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
         bluetoothAdapter = bluetoothManager.getAdapter();
-
-        if (bluetoothAdapter == null) {
-            Toast.makeText(this, "Bluetooth ni podprt", Toast.LENGTH_LONG).show();
-            btnConnect.setEnabled(false);
-        } else {
+        if (bluetoothAdapter != null) {
             bluetoothLeScanner = bluetoothAdapter.getBluetoothLeScanner();
         }
-
-        btnConnect.setOnClickListener(v -> {
-            if (isConnected) {
-                disconnectDevice();
-            } else {
-                if (checkAndRequestPermissions()) {
-                    startScan();
-                }
-            }
-        });
 
         handler.post(watchdogRunnable);
     }
 
-    private void appendLog(String text) {
-        runOnUiThread(() -> {
-            String currentText = rawLogsText.getText().toString();
-            if (currentText.length() > 500) currentText = currentText.substring(250);
-            rawLogsText.setText(currentText + "\n" + text);
-            rawLogsScroll.post(() -> rawLogsScroll.fullScroll(ScrollView.FOCUS_DOWN));
-        });
+    public void setBottomNavVisibility(int visibility) {
+        if (bottomNav != null) {
+            bottomNav.setVisibility(visibility);
+        }
+    }
+
+    public void switchToTuner() {
+        if (bottomNav != null) {
+            bottomNav.setSelectedItemId(R.id.nav_tuner);
+        }
+        loadFragment(tunerFragment);
+    }
+
+    private void loadFragment(Fragment fragment) {
+        getSupportFragmentManager()
+                .beginTransaction()
+                .replace(R.id.fragment_container, fragment)
+                .commit();
+    }
+
+    @Override
+    public void onConnectClicked() {
+        if (isConnected) {
+            disconnectDevice();
+        } else {
+            if (checkAndRequestPermissions()) {
+                startScan();
+            }
+        }
+    }
+
+    @Override
+    public boolean isConnected() {
+        return isConnected;
     }
 
     private boolean checkAndRequestPermissions() {
@@ -172,10 +188,11 @@ public class MainActivity extends AppCompatActivity {
     private void startScan() {
         if (!isScanning) {
             isScanning = true;
-            statusText.setText("Iskanje XIAO...");
-            appendLog("Iščem XIAO...");
+            if (tunerFragment != null && tunerFragment.isAdded()) {
+                tunerFragment.setStatusText("Iskanje XIAO...");
+                tunerFragment.appendLog("Iščem XIAO...");
+            }
             bluetoothLeScanner.startScan(leScanCallback);
-            btnConnect.setText("Prekini");
             handler.postDelayed(() -> { if (isScanning) stopScan(); }, SCAN_PERIOD);
         }
     }
@@ -185,10 +202,6 @@ public class MainActivity extends AppCompatActivity {
         if (isScanning) {
             isScanning = false;
             bluetoothLeScanner.stopScan(leScanCallback);
-            if (!isConnected) {
-                statusText.setText("Iskanje ustavljeno");
-                btnConnect.setText("Poveži z XIAO");
-            }
         }
     }
 
@@ -213,7 +226,7 @@ public class MainActivity extends AppCompatActivity {
 
     @SuppressLint("MissingPermission")
     private void connectToDevice(BluetoothDevice device) {
-        statusText.setText("Povezovanje...");
+        if (tunerFragment != null && tunerFragment.isAdded()) tunerFragment.setStatusText("Povezovanje...");
         bluetoothGatt = device.connectGatt(this, false, gattCallback);
     }
 
@@ -224,20 +237,22 @@ public class MainActivity extends AppCompatActivity {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 isConnected = true;
                 runOnUiThread(() -> {
-                    statusText.setText("Povezano!");
-                    btnConnect.setText("Odklopi");
-                    btnConnect.setBackgroundTintList(ContextCompat.getColorStateList(MainActivity.this, android.R.color.holo_red_dark));
+                    if (tunerFragment != null && tunerFragment.isAdded()) {
+                        tunerFragment.setStatusText("Povezano!");
+                        tunerFragment.updateConnectButton(true);
+                    }
                 });
                 gatt.discoverServices();
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 isConnected = false;
                 runOnUiThread(() -> {
-                    statusText.setText("Prekinjeno");
-                    btnConnect.setText("Poveži z XIAO");
-                    btnConnect.setBackgroundTintList(ContextCompat.getColorStateList(MainActivity.this, R.color.accentColor));
-                    noteText.setText("--");
-                    freqText.setText("0.00 Hz");
-                    tunerPointer.setVisibility(View.INVISIBLE);
+                    if (tunerFragment != null && tunerFragment.isAdded()) {
+                        tunerFragment.setStatusText("Prekinjeno");
+                        tunerFragment.updateConnectButton(false);
+                        tunerFragment.setNoteText("--");
+                        tunerFragment.setFreqText("0.00 Hz");
+                        tunerFragment.updateScale(null);
+                    }
                 });
                 if (bluetoothGatt != null) {
                     bluetoothGatt.close();
@@ -259,7 +274,6 @@ public class MainActivity extends AppCompatActivity {
                         if (descriptor != null) {
                             descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
                             gatt.writeDescriptor(descriptor);
-                            appendLog("Naročen na podatke.");
                         }
                     }
                 }
@@ -281,118 +295,45 @@ public class MainActivity extends AppCompatActivity {
 
                     if (freq > 0) {
                         double finalFreq = freq;
-                        runOnUiThread(() -> updateUI(finalFreq));
+                        runOnUiThread(() -> processFrequency(finalFreq));
                     }
                 }
             }
         }
     };
 
-    private void updateUI(double frequency) {
-        long now = System.currentTimeMillis();
+    private void processFrequency(double frequency) {
+        if (frequency <= 65 || frequency >= 450) return;
+        lastDetectionTime = System.currentTimeMillis();
 
-        if (frequency > 65 && frequency < 450) {
-            lastDetectionTime = now;
-            freqText.setText(String.format(Locale.US, "%.2f Hz", frequency));
-
-            int closestIndex = 0;
-            double minDiff = Double.MAX_VALUE;
-            for (int i = 0; i < guitarNotes.length; i++) {
-                double diff = Math.abs(frequency - guitarNotes[i]);
-                if (diff < minDiff) {
-                    minDiff = diff;
-                    closestIndex = i;
-                }
+        int closestIndex = 0;
+        double minDiff = Double.MAX_VALUE;
+        for (int i = 0; i < guitarNotes.length; i++) {
+            double diff = Math.abs(frequency - guitarNotes[i]);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = i;
             }
+        }
 
-            if (minDiff < 20) {
-                noteText.setText(noteNames[closestIndex]);
-                double targetFreq = guitarNotes[closestIndex];
-                double cents = 1200 * Math.log(frequency / targetFreq) / Math.log(2);
-                
-                // Low-pass filter za glajenje centov
-                smoothedCents = smoothedCents + SMOOTHING_FACTOR * (cents - smoothedCents);
-                updateScale(smoothedCents);
+        if (minDiff < 20) {
+            double targetFreq = guitarNotes[closestIndex];
+            double cents = 1200 * Math.log(frequency / targetFreq) / Math.log(2);
+            smoothedCents = smoothedCents + SMOOTHING_FACTOR * (cents - smoothedCents);
+
+            if (tunerFragment != null && tunerFragment.isVisible()) {
+                tunerFragment.setFreqText(String.format(Locale.US, "%.2f Hz", frequency));
+                tunerFragment.setNoteText(noteNames[closestIndex]);
+                tunerFragment.updateScale(smoothedCents);
 
                 if (Math.abs(cents) < 2) {
-                    statusText.setText("PERFECT");
-                    statusText.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_light));
-                } else if (cents > 0) {
-                    statusText.setText(String.format(Locale.US, "+%.1f cents", cents));
-                    statusText.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_light));
+                    tunerFragment.setStatusText("PERFECT");
+                    tunerFragment.setStatusTextColor(android.R.color.holo_green_light);
                 } else {
-                    statusText.setText(String.format(Locale.US, "%.1f cents", cents));
-                    statusText.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_light));
+                    tunerFragment.setStatusText(String.format(Locale.US, "%+.1f cents", cents));
+                    tunerFragment.setStatusTextColor(android.R.color.holo_red_light);
                 }
-            } else {
-                noteText.setText("--");
-                statusText.setText("CHECK STRING");
-                statusText.setTextColor(ContextCompat.getColor(this, R.color.textColorSecondary));
-                // Ne skrivamo takoj, pustimo da watchdog opravi svoje
             }
-        }
-    }
-
-    private void updateScale(double cents) {
-        tunerPointer.setVisibility(View.VISIBLE);
-        
-        double clampedCents = Math.max(-50, Math.min(50, cents));
-        View parent = (View) tunerPointer.getParent();
-        int width = parent.getWidth();
-        if (width == 0) return;
-
-        float x = (float) ((clampedCents / 100.0) * width);
-        
-        // Namesto setTranslationX uporabimo animate() za bolj tekoče premikanje
-        tunerPointer.animate()
-                .translationX(x)
-                .setDuration(50)
-                .start();
-
-        addWaterfallLine(x, clampedCents);
-    }
-
-    private void addWaterfallLine(float translationX, Double cents) {
-        int lineHeight = 10;
-        
-        FrameLayout wrapper = new FrameLayout(this);
-        wrapper.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, lineHeight));
-
-        if (cents != null) {
-            View dot = new View(this);
-            int dotSize = 10;
-            FrameLayout.LayoutParams dotLp = new FrameLayout.LayoutParams(dotSize, dotSize);
-            dotLp.gravity = Gravity.CENTER_VERTICAL;
-            dot.setLayoutParams(dotLp);
-            
-            if (Math.abs(cents) < 2) {
-                dot.setBackgroundColor(ContextCompat.getColor(this, android.R.color.holo_green_light));
-            } else {
-                dot.setBackgroundColor(ContextCompat.getColor(this, android.R.color.white));
-            }
-
-            dot.setTranslationX(((View)waterfallContainer).getWidth() / 2f + translationX - (dotSize / 2f));
-            wrapper.addView(dot);
-        }
-
-        waterfallContainer.addView(wrapper, 0);
-
-        if (waterfallContainer.getChildCount() > 20) {
-            waterfallContainer.removeViewAt(waterfallContainer.getChildCount() - 1);
-        }
-
-        for (int i = 0; i < waterfallContainer.getChildCount(); i++) {
-            float alpha = 1.0f - (i / (float) waterfallContainer.getChildCount());
-            waterfallContainer.getChildAt(i).setAlpha(alpha);
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startScan();
         }
     }
 
@@ -401,10 +342,7 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         handler.removeCallbacks(watchdogRunnable);
         if (bluetoothGatt != null) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                bluetoothGatt.disconnect();
-                bluetoothGatt.close();
-            }
+            disconnectDevice();
         }
     }
 }

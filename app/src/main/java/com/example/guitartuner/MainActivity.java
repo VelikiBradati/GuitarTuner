@@ -161,6 +161,7 @@ public class MainActivity extends AppCompatActivity implements TunerFragment.Tun
         return isConnected;
     }
 
+    // preveri dovoljenja
     private boolean checkAndRequestPermissions() {
         List<String> permissionsNeeded = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -280,6 +281,7 @@ public class MainActivity extends AppCompatActivity implements TunerFragment.Tun
             }
         }
 
+        // iz 4 bajtov sestavi float decimalno število
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
             if (CHARACTERISTIC_UUID.equals(characteristic.getUuid())) {
